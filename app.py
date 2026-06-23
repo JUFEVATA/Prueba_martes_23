@@ -134,6 +134,65 @@ st.markdown("""
 
 
 # ============================================================
+# FUNCIONES AUXILIARES
+# ============================================================
+
+def formato_cop(valor):
+    """
+    Convierte un valor numérico a formato de pesos colombianos.
+    Ejemplo: 1850000 -> $1.850.000 COP
+    """
+    try:
+        valor = float(valor)
+        return f"${valor:,.0f}".replace(",", ".") + " COP"
+    except:
+        return str(valor)
+
+
+def detectar_columna_prediccion(resultado, columnas_entrada):
+    """
+    Detecta automáticamente la columna donde DataRobot devuelve la predicción.
+    Evita tomar columnas como prediction_status.
+    """
+
+    columnas = list(resultado.columns)
+
+    posibles = [
+        col for col in columnas
+        if "prediction" in col.lower()
+        and "status" not in col.lower()
+        and col not in columnas_entrada
+    ]
+
+    if posibles:
+        return posibles[0]
+
+    posibles = [
+        col for col in columnas
+        if "predicted" in col.lower()
+        and col not in columnas_entrada
+    ]
+
+    if posibles:
+        return posibles[0]
+
+    posibles = [
+        col for col in columnas
+        if col not in columnas_entrada
+        and "status" not in col.lower()
+    ]
+
+    for col in posibles:
+        try:
+            pd.to_numeric(resultado[col])
+            return col
+        except:
+            pass
+
+    return None
+
+
+# ============================================================
 # FUNCIÓN PARA CONECTAR CON DATAROBOT
 # ============================================================
 
@@ -156,7 +215,6 @@ def hacer_prediccion_batch(df_input):
         "includePredictionStatus": True
     }
 
-    # Crear job de predicción
     response = requests.post(
         batch_url,
         headers=headers_json,
@@ -171,7 +229,6 @@ def hacer_prediccion_batch(df_input):
     upload_url = job["links"]["csvUpload"]
     job_url = job["links"]["self"]
 
-    # Convertir DataFrame a CSV en memoria
     csv_buffer = io.StringIO()
     df_input.to_csv(csv_buffer, index=False)
     csv_bytes = csv_buffer.getvalue().encode("utf-8")
@@ -181,7 +238,6 @@ def hacer_prediccion_batch(df_input):
         "Content-Type": "text/csv; encoding=utf-8"
     }
 
-    # Subir CSV a DataRobot
     upload_response = requests.put(
         upload_url,
         headers=upload_headers,
@@ -191,7 +247,6 @@ def hacer_prediccion_batch(df_input):
     if upload_response.status_code >= 400:
         raise Exception(f"Error subiendo los datos a DataRobot: {upload_response.text}")
 
-    # Esperar a que DataRobot termine el proceso
     progress_bar = st.progress(0)
     status_text = st.empty()
 
@@ -227,7 +282,6 @@ def hacer_prediccion_batch(df_input):
     if status != "COMPLETED":
         raise Exception(f"El proceso terminó con estado: {status}")
 
-    # Descargar predicción
     download_url = job_data["links"]["download"]
 
     download_response = requests.get(
@@ -271,16 +325,18 @@ with st.sidebar:
 
     st.divider()
 
-    st.subheader("📌 Variables del modelo")
+    st.subheader("📌 Variables de entrada")
     st.write("📐 metros_cuadrados")
     st.write("🛏️ habitaciones")
     st.write("🚿 banos")
     st.write("🏙️ estrato")
-    st.write("💰 precio_arriendo_cop")
 
     st.divider()
 
-    st.caption("El modo demo no usa DataRobot. Solo sirve para probar la interfaz.")
+    st.subheader("🎯 Variable objetivo")
+    st.write("💰 precio_arriendo_cop")
+
+    st.caption("El precio de arriendo no se ingresa porque es el valor que el modelo debe predecir.")
 
 
 # ============================================================
@@ -290,7 +346,7 @@ with st.sidebar:
 st.markdown("""
 <div class="info-box">
     <h3>🏡 Datos del inmueble</h3>
-    <p>Ingresa las características del inmueble para enviarlas al modelo predictivo.</p>
+    <p>Ingresa las características del inmueble. El modelo estimará el precio de arriendo.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -313,6 +369,7 @@ with col1:
         step=1
     )
 
+with col2:
     banos = st.number_input(
         "🚿 Baños",
         min_value=0,
@@ -321,23 +378,14 @@ with col1:
         step=1
     )
 
-with col2:
     estrato = st.select_slider(
         "🏙️ Estrato",
         options=[1, 2, 3, 4, 5, 6],
         value=3
     )
 
-    precio_arriendo_cop = st.number_input(
-        "💰 Precio arriendo COP",
-        min_value=0,
-        max_value=50000000,
-        value=1500000,
-        step=50000
-    )
-
     st.write("")
-    calcular = st.button("🚀 Realizar predicción")
+    calcular = st.button("🚀 Predecir precio de arriendo")
 
 
 # ============================================================
@@ -346,7 +394,7 @@ with col2:
 
 st.subheader("📊 Resumen de entrada")
 
-resumen_col1, resumen_col2, resumen_col3, resumen_col4, resumen_col5 = st.columns(5)
+resumen_col1, resumen_col2, resumen_col3, resumen_col4 = st.columns(4)
 
 with resumen_col1:
     st.markdown(f"""
@@ -384,15 +432,6 @@ with resumen_col4:
     </div>
     """, unsafe_allow_html=True)
 
-with resumen_col5:
-    st.markdown(f"""
-    <div class="metric-card">
-        <h3>💰</h3>
-        <h4>${precio_arriendo_cop:,.0f}</h4>
-        <p>Arriendo COP</p>
-    </div>
-    """, unsafe_allow_html=True)
-
 
 # ============================================================
 # DATAFRAME QUE SE ENVÍA AL MODELO
@@ -402,9 +441,10 @@ input_data = pd.DataFrame([{
     "metros_cuadrados": metros_cuadrados,
     "habitaciones": habitaciones,
     "banos": banos,
-    "estrato": estrato,
-    "precio_arriendo_cop": precio_arriendo_cop
+    "estrato": estrato
 }])
+
+columnas_entrada = list(input_data.columns)
 
 st.subheader("🧾 Datos enviados al modelo")
 st.dataframe(input_data, use_container_width=True)
@@ -426,8 +466,8 @@ if calcular:
 
         st.markdown(f"""
         <div class="prediction-card">
-            <h2>🧪 Resultado en modo demo</h2>
-            <h1>${prediccion_demo:,.0f} COP</h1>
+            <h2>🧪 Precio estimado en modo demo</h2>
+            <h1>{formato_cop(prediccion_demo)}</h1>
             <p>Este valor es simulado. No viene de DataRobot.</p>
         </div>
         """, unsafe_allow_html=True)
@@ -442,24 +482,17 @@ if calcular:
             st.subheader("📌 Resultado completo")
             st.dataframe(resultado, use_container_width=True)
 
-            columnas_prediccion = [
-                col for col in resultado.columns
-                if "prediction" in col.lower()
-                or "predicted" in col.lower()
-                or "predicción" in col.lower()
-                or "class" in col.lower()
-                or "score" in col.lower()
-            ]
+            columna_resultado = detectar_columna_prediccion(resultado, columnas_entrada)
 
-            if columnas_prediccion:
-                columna_resultado = columnas_prediccion[0]
+            if columna_resultado:
                 valor_predicho = resultado[columna_resultado].iloc[0]
+                valor_formateado = formato_cop(valor_predicho)
 
                 st.markdown(f"""
                 <div class="prediction-card">
-                    <h2>🎯 Predicción del modelo</h2>
-                    <h1>{valor_predicho}</h1>
-                    <p>Columna detectada: {columna_resultado}</p>
+                    <h2>🎯 Precio de arriendo estimado</h2>
+                    <h1>{valor_formateado}</h1>
+                    <p>Resultado generado por el deployment de DataRobot</p>
                 </div>
                 """, unsafe_allow_html=True)
 
